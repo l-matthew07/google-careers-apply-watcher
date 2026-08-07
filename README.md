@@ -20,7 +20,6 @@ want to run it:
 | [`apply_watcher.py`](#local-mode-macos) | Your Mac (stdlib only) | macOS notification |
 | [`aws/`](#cloud-mode-aws-lambda--twilio-sms) | AWS Lambda (free tier) | Twilio SMS |
 | [`apply_notifier.py`](#apply_notifierpy-slack--email--webhook) | Anywhere with Python | Slack / email / webhook |
-| [`code.gs`](Apps_Script_Readme.md) | Google Apps Script | Email (Gmail), form-driven |
 
 ## Local mode (macOS)
 
@@ -122,13 +121,6 @@ Enable notification channels via environment variables (or `.env`):
 | Slack    | `SLACK_WEBHOOK_URL` |
 | Webhook (Discord/ntfy/custom) | `WEBHOOK_URL` |
 | Email    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `NOTIFY_EMAIL_TO` |
-
-## Google Apps Script mode
-
-See [Apps_Script_Readme.md](Apps_Script_Readme.md) — a `code.gs` script that
-reads job URLs and subscriber emails from a Google Form and emails people
-when their watched job opens. Runs on a time-driven Apps Script trigger, no
-infrastructure needed.
 
 ## Notes / limitations
 
