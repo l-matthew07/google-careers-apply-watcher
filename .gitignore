@@ -1,0 +1,5 @@
+.env
+aws/.env
+aws/function.zip
+watch.log
+__pycache__/
