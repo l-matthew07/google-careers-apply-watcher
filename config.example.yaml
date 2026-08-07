@@ -1,0 +1,14 @@
+# Example configuration for apply_notifier.py
+interval_seconds: 300      # base poll interval
+jitter_seconds: 20         # random extra delay added to each cycle
+timeout_seconds: 15
+max_retries: 4
+state_file: state.json
+log_file: apply_notifier.log
+user_agent: "Mozilla/5.0 (compatible; ApplyButtonWatcher/1.0)"
+
+jobs:
+  - label: "Staff Software Engineer, AI/ML GenAI, Google Ads (IN)"
+    url: "https://www.google.com/about/careers/applications/jobs/results/CiUAL2FckeOJ02EDLIv4AA7albabS5Hb7u1lQeWl2A8yHUzygN4"
+  - label: "Staff Software Engineer, Accelerator Platform Software (US)"
+    url: "https://www.google.com/about/careers/applications/jobs/results/CiUAL2FckauLe8vz0wuIy1r-0Bt565GJt3yNmtU_YEXpJedzaoGb"
