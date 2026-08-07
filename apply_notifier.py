@@ -70,6 +70,8 @@ from typing import Optional
 import requests
 import yaml
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+load_dotenv()
 
 DEFAULT_INTERVAL_SECONDS = 300
 DEFAULT_TIMEOUT_SECONDS = 15
