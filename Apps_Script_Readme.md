@@ -15,5 +15,5 @@ This script monitors Google Careers job postings to see when the "Apply" button 
 1. Open Google Apps Script (`script.google.com`).
 2. Paste the contents of `Code.gs` into the editor.
 3. Click the **Triggers** icon (the alarm clock) on the left sidebar.
-4. Add a new trigger for the `checkCareersPages` function. Set the event source to **Time-driven**, set it to a **Minutes timer**, and choose **Every 5 minutes**.
+4. Add a new trigger for the `checkCareersPage` function. Set the event source to **Time-driven**, set it to a **Minutes timer**, and choose **Every 5 minutes**.
 5. Save the trigger. The script will now run silently in the background. You can check the **Executions** tab to view the logs.
