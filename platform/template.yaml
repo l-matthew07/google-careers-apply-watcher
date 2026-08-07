@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Google Careers apply-button notifier at scale: signup API -> DynamoDB,
+  scheduled watcher -> SQS fan-out -> SES email + Twilio SMS.
+
+Parameters:
+  SesSender:
+    Type: String
+    Description: Verified SES sender, e.g. alerts@yourdomain.com
+  TwilioAccountSid:
+    Type: String
+    NoEcho: true
+  TwilioAuthToken:
+    Type: String
+    NoEcho: true
+  TwilioFrom:
+    Type: String
+    Description: Twilio number (10DLC-registered or short code), e.g. +15551234567
+  CorsOrigin:
+    Type: String
+    Default: '*'
+    Description: Origin allowed to call /subscribe (your signup page's domain)
+  NotifierConcurrency:
+    Type: Number
+    Default: 5
+    Description: >
+      Reserved concurrency for the notify worker — this is the SMS
+      throughput valve; size it to your registered Twilio sending rate.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    CodeUri: src/
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref Table
+
+Resources:
+  Table:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - {AttributeName: pk, AttributeType: S}
+        - {AttributeName: sk, AttributeType: S}
+        - {AttributeName: gsi1pk, AttributeType: S}
+        - {AttributeName: gsi1sk, AttributeType: S}
+      KeySchema:
+        - {AttributeName: pk, KeyType: HASH}
+        - {AttributeName: sk, KeyType: RANGE}
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - {AttributeName: gsi1pk, KeyType: HASH}
+            - {AttributeName: gsi1sk, KeyType: RANGE}
+          Projection: {ProjectionType: ALL}
+      TimeToLiveSpecification: {AttributeName: ttl, Enabled: true}
+
+  FanoutQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 960   # 6x fanout Lambda timeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FanoutDLQ.Arn
+        maxReceiveCount: 3
+  FanoutDLQ:
+    Type: AWS::SQS::Queue
+
+  NotifyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NotifyDLQ.Arn
+        maxReceiveCount: 5
+  NotifyDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # 14 days to inspect/redrive
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref CorsOrigin]
+        AllowMethods: [GET, POST, OPTIONS]
+        AllowHeaders: [Content-Type]
+
+  IntakeFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: intake.lambda_handler
+      Environment:
+        Variables:
+          SES_SENDER: !Ref SesSender
+          CORS_ORIGIN: !Ref CorsOrigin
+          API_BASE_URL: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+      Events:
+        Subscribe:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: /subscribe, Method: POST}
+        Confirm:
+          Type: HttpApi
+          Properties: {ApiId: !Ref Api, Path: /confirm, Method: GET}
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref Table}
+        - SESCrudPolicy: {IdentityName: !Ref SesSender}
+
+  WatcherFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: watcher.lambda_handler
+      Timeout: 120
+      Environment:
+        Variables:
+          FANOUT_QUEUE_URL: !Ref FanoutQueue
+      Events:
+        Every5Min:
+          Type: Schedule
+          Properties: {Schedule: 'rate(5 minutes)'}
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref Table}
+        - SQSSendMessagePolicy: {QueueName: !GetAtt FanoutQueue.QueueName}
+
+  FanoutFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: fanout.lambda_handler
+      Timeout: 160
+      Environment:
+        Variables:
+          FANOUT_QUEUE_URL: !Ref FanoutQueue
+          NOTIFY_QUEUE_URL: !Ref NotifyQueue
+      Events:
+        Fanout:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt FanoutQueue.Arn
+            BatchSize: 1
+      Policies:
+        - DynamoDBReadPolicy: {TableName: !Ref Table}
+        - SQSSendMessagePolicy: {QueueName: !GetAtt FanoutQueue.QueueName}
+        - SQSSendMessagePolicy: {QueueName: !GetAtt NotifyQueue.QueueName}
+
+  NotifierFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: notifier.lambda_handler
+      ReservedConcurrentExecutions: !Ref NotifierConcurrency
+      Environment:
+        Variables:
+          SES_SENDER: !Ref SesSender
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_FROM: !Ref TwilioFrom
+      Events:
+        Notify:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NotifyQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes: [ReportBatchItemFailures]
+      Policies:
+        - DynamoDBCrudPolicy: {TableName: !Ref Table}
+        - SESCrudPolicy: {IdentityName: !Ref SesSender}
+
+Outputs:
+  ApiBaseUrl:
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com
+    Description: Point the signup page's API_BASE at this
+  NotifyDLQUrl:
+    Value: !Ref NotifyDLQ
+    Description: Failed notifications land here — monitor it

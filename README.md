@@ -122,6 +122,15 @@ Enable notification channels via environment variables (or `.env`):
 | Webhook (Discord/ntfy/custom) | `WEBHOOK_URL` |
 | Email    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `NOTIFY_EMAIL_TO` |
 
+## Serving many subscribers (`platform/`)
+
+The modes above are single-user. [`platform/`](platform/README.md) is the
+multi-subscriber architecture: a signup page → API Gateway → Lambda →
+DynamoDB intake with email double opt-in, and a scheduled watcher that
+fans out through SQS to SES email and Twilio SMS workers. Built to serve
+250k+ subscribers; see its README for deploy steps and the SES/Twilio
+compliance checklist that scale requires.
+
 ## Notes / limitations
 
 - This only detects a DOM-level "Apply" link becoming active. If Google changes the markup or blocks automated requests (e.g., CAPTCHA), the watchers log a `missing` status rather than crash, but won't know a role opened until the selector is updated.

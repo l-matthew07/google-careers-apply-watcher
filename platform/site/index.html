@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Google Careers Apply Alert</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 30rem;
+         margin: 4rem auto; padding: 0 1rem; }
+  label { display: block; margin-top: 1rem; font-weight: 600; }
+  input { width: 100%; padding: .5rem; margin-top: .25rem; box-sizing: border-box; }
+  fieldset { margin-top: 1rem; border: none; padding: 0; }
+  fieldset label { display: inline; font-weight: 400; margin-right: 1rem; }
+  button { margin-top: 1.5rem; padding: .6rem 1.5rem; font-size: 1rem; cursor: pointer; }
+  #msg { margin-top: 1rem; font-weight: 600; }
+  small { color: gray; }
+</style>
+</head>
+<body>
+<h1>Get alerted when the Apply button goes live</h1>
+<p>Paste a Google Careers job URL. The moment it starts accepting
+applications, you get notified.</p>
+
+<form id="f">
+  <label>Job posting URL
+    <input name="job_url" type="url" required
+           placeholder="https://www.google.com/about/careers/applications/jobs/results/...">
+  </label>
+  <label>Email
+    <input name="email" type="email" required placeholder="you@example.com">
+  </label>
+  <label>Phone <small>(optional, for SMS — E.164 format)</small>
+    <input name="phone" type="tel" placeholder="+15551234567">
+  </label>
+  <fieldset>
+    <label><input type="checkbox" name="ch_email" checked> Email</label>
+    <label><input type="checkbox" name="ch_sms"> SMS</label>
+  </fieldset>
+  <button>Watch this job</button>
+  <p><small>You'll get a confirmation email first — the alert only
+  activates after you click it. One alert per job, no other mail.</small></p>
+</form>
+<p id="msg"></p>
+
+<script>
+const API_BASE = "%%API_BASE_URL%%";  // filled in by deploy, or edit by hand
+
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, msg = document.getElementById("msg");
+  const channels = [];
+  if (f.ch_email.checked) channels.push("email");
+  if (f.ch_sms.checked) channels.push("sms");
+  msg.textContent = "…";
+  try {
+    const r = await fetch(API_BASE + "/subscribe", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        job_url: f.job_url.value.trim(),
+        email: f.email.value.trim(),
+        phone: f.phone.value.trim(),
+        channels,
+      }),
+    });
+    const body = await r.json();
+    msg.textContent = r.ok
+      ? "Check your inbox — click the confirmation link to activate the alert."
+      : "Error: " + (body.error || r.status);
+  } catch {
+    msg.textContent = "Network error — try again.";
+  }
+});
+</script>
+</body>
+</html>
