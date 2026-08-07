@@ -3,3 +3,8 @@ aws/.env
 aws/function.zip
 watch.log
 __pycache__/
+*.pyc
+state.json
+apply_notifier.log
+config.yaml
+.venv/
