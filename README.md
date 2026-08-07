@@ -39,8 +39,10 @@ Python 3 standard library only — nothing to install.
 
 ## Cloud mode (AWS Lambda + Twilio SMS)
 
-Runs every 5 minutes on AWS free tier and **texts you** the moment a button
-appears — one SMS per event, deduped via SSM Parameter Store state.
+Runs every 5 minutes on AWS free tier and **texts everyone in `TWILIO_TO`**
+(comma-separated) the moment a button appears — one SMS per event per
+recipient, deduped via SSM Parameter Store state. This is the current MVP:
+the team gets the stream directly and relays it onward by hand.
 
 One-time setup:
 
@@ -129,7 +131,9 @@ multi-subscriber architecture: a signup page → API Gateway → Lambda →
 DynamoDB intake with email double opt-in, and a scheduled watcher that
 fans out through SQS to SES email and Twilio SMS workers. Built to serve
 250k+ subscribers; see its README for deploy steps and the SES/Twilio
-compliance checklist that scale requires.
+compliance checklist that scale requires. **Currently parked as the
+phase-2 path** — distribution happens via social for now, and this stack
+gets picked back up when signup opens to the public.
 
 ## Notes / limitations
 

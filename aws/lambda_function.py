@@ -11,7 +11,7 @@ Environment variables:
     TWILIO_ACCOUNT_SID  from twilio.com/console
     TWILIO_AUTH_TOKEN   from twilio.com/console
     TWILIO_FROM         your Twilio phone number, e.g. +15551234567
-    TWILIO_TO           your phone number to text, e.g. +15557654321
+    TWILIO_TO           recipient number(s) to text, comma-separated
     STATE_PARAM         SSM parameter name for state (default /apply-watcher/state)
 
 No third-party packages — Twilio is called through its plain REST API.
@@ -77,22 +77,28 @@ def check(job_url: str) -> tuple[str, str | None]:
 def send_sms(body: str) -> None:
     sid = os.environ["TWILIO_ACCOUNT_SID"]
     token = os.environ["TWILIO_AUTH_TOKEN"]
-    data = urllib.parse.urlencode({
-        "From": os.environ["TWILIO_FROM"],
-        "To": os.environ["TWILIO_TO"],
-        "Body": body,
-    }).encode()
-    req = urllib.request.Request(
-        f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
-        data=data,
-        headers={
-            "Authorization": "Basic "
-            + base64.b64encode(f"{sid}:{token}".encode()).decode(),
-            "Content-Type": "application/x-www-form-urlencoded",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        print(f"Twilio: {resp.status}")
+    recipients = [n.strip() for n in os.environ["TWILIO_TO"].split(",") if n.strip()]
+    for to in recipients:
+        data = urllib.parse.urlencode({
+            "From": os.environ["TWILIO_FROM"],
+            "To": to,
+            "Body": body,
+        }).encode()
+        req = urllib.request.Request(
+            f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
+            data=data,
+            headers={
+                "Authorization": "Basic "
+                + base64.b64encode(f"{sid}:{token}".encode()).decode(),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                print(f"Twilio -> {to}: {resp.status}")
+        except urllib.error.HTTPError as e:
+            # One bad number must not block the rest of the team's texts.
+            print(f"Twilio -> {to}: FAILED {e.code} {e.read().decode()[:200]}")
 
 
 def load_state(param: str) -> dict:
