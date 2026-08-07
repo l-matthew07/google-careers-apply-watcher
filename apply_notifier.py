@@ -238,7 +238,7 @@ def notify(message: str) -> None:
     if to_addr and smtp_host:
         try:
             msg = MIMEText(message)
-            msg["Subject"] = "Google Apply Button Alert"
+            msg["Subject"] = message
             msg["From"] = os.environ.get("SMTP_USER", "apply-notifier@localhost")
             msg["To"] = to_addr
             with smtplib.SMTP(smtp_host, int(os.environ.get("SMTP_PORT", "587"))) as server:

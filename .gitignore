@@ -4,3 +4,4 @@ state.json
 apply_notifier.log
 config.yaml
 .venv/
+.env
