@@ -2,97 +2,128 @@
  * Main function to set on a time-driven trigger.
  */
 function checkCareersPage() {
-  var targetUrl = "https://www.google.com/about/careers/applications/jobs/results/78703249065943750-software-engineer-early-career-campus"; 
-  var referenceUrl = "https://www.google.com/about/careers/applications/jobs/results/82087125486314182-manufacturing-structural-test-development-engineer";
   var formId = "1JzQkcc8fsnolMbQLZoRrooxmFt-onrWVa8gEPlqnbs4"; 
-
-  // Fetch the target Early Career job page
-  var targetResponse = UrlFetchApp.fetch(targetUrl);
-  var targetHtml = targetResponse.getContentText().toLowerCase();
-  var targetButtonFound = targetHtml.includes('id="apply-action-button"');
-
-  // Fetch the active reference job page
+  var referenceUrl = "https://www.google.com/about/careers/applications/jobs/results/82087125486314182-manufacturing-structural-test-development-engineer";
+  
+  // 1. Check the active reference job page to ensure Google's site structure hasn't changed
   var referenceResponse = UrlFetchApp.fetch(referenceUrl);
   var referenceHtml = referenceResponse.getContentText().toLowerCase();
   var referenceButtonFound = referenceHtml.includes('id="apply-action-button"');
 
-  // Silently log the status. No emails are sent here.
-  if (referenceButtonFound && !targetButtonFound) {
-    console.log("Button was found on the reference job but not on the Early Career job.");
-  } else if (!referenceButtonFound && !targetButtonFound) {
-    console.log("Button was not found on either job. Google might have changed their webpage structure.");
-  } else if (targetButtonFound) {
-    console.log("Button found on the Early Career job! Checking for new form submissions.");
-    sendEmailsFromForm(formId);
+  if (!referenceButtonFound) {
+    console.log("Button was not found on the reference job. Google might have changed their webpage structure.");
   }
-}
 
-/**
- * Helper function to read the form and send emails.
- */
-function sendEmailsFromForm(formId) {
+  // 2. Read the form responses
   var form = FormApp.openById(formId);
   var responses = form.getResponses();
   
-  var scriptProperties = PropertiesService.getScriptProperties();
-  
-  // Load the list of already emailed addresses. If it doesn't exist, create an empty object.
-  var sentEmailsString = scriptProperties.getProperty('sentEmails');
-  var sentEmails = sentEmailsString ? JSON.parse(sentEmailsString) : {};
-  
-  var subject = "Google Early Career Application is Open";
-  var message = "Please apply to the Google Early Career position. The apply button has been updated on the website: https://www.google.com/about/careers/applications/jobs/results/78703249065943750-software-engineer-early-career-campus";
+  var usersToNotify = [];
+  var uniqueLinksToCheck = {};
 
-  var emailsSentCount = 0;
-
+  // 3. Extract emails and links from every form submission
   for (var i = 0; i < responses.length; i++) {
     var itemResponses = responses[i].getItemResponses();
+    var email = "";
+    var targetLink = "";
     
-    // Grab the answer to the first question ("Your Email")
-    if (itemResponses.length > 0) {
-      // Get the email and make it lowercase so "Test@gmail.com" matches "test@gmail.com"
-      var emailAddress = itemResponses[0].getResponse().trim().toLowerCase();
+    // Look through the answers in this specific submission
+    for (var j = 0; j < itemResponses.length; j++) {
+      var questionTitle = itemResponses[j].getItem().getTitle().toLowerCase();
+      var answer = itemResponses[j].getResponse().trim();
       
-      // Check if the cell has an email and if it is NOT in our sent list
-      if (emailAddress && emailAddress !== "" && !sentEmails[emailAddress]) {
-        MailApp.sendEmail(emailAddress, subject, message);
-        
-        // Add this email to our tracking list
-        sentEmails[emailAddress] = true;
-        emailsSentCount++;
+      if (questionTitle.includes("email")) {
+        email = answer.toLowerCase();
+      } else if (questionTitle.includes("link")) {
+        targetLink = answer;
       }
+    }
+    
+    // If we have both an email and a link, add them to our lists
+    if (email !== "" && targetLink !== "") {
+      usersToNotify.push({ email: email, link: targetLink });
+      uniqueLinksToCheck[targetLink] = false; // Default status is false (button not found yet)
+    }
+  }
+
+  // 4. Fetch the HTML for each unique link requested by users
+  for (var link in uniqueLinksToCheck) {
+    try {
+      var targetResponse = UrlFetchApp.fetch(link);
+      var targetHtml = targetResponse.getContentText().toLowerCase();
+      
+      if (targetHtml.includes('id="apply-action-button"')) {
+        uniqueLinksToCheck[link] = true;
+      }
+    } catch (error) {
+      console.log("Failed to fetch link: " + link + ". Error: " + error.message);
+    }
+  }
+
+  // 5. Check tracking properties and send emails
+  var scriptProperties = PropertiesService.getScriptProperties();
+  var sentLogString = scriptProperties.getProperty('sentNotifications');
+  var sentNotifications = sentLogString ? JSON.parse(sentLogString) : {};
+  
+  var emailsSentCount = 0;
+
+  for (var k = 0; k < usersToNotify.length; k++) {
+    var userEmail = usersToNotify[k].email;
+    var userLink = usersToNotify[k].link;
+    
+    // Create a unique tracking key combining their email and the specific job link
+    var trackingKey = userEmail + "|" + userLink;
+    
+    // If the button was found AND we haven't emailed this person about this specific link yet
+    if (uniqueLinksToCheck[userLink] === true && !sentNotifications[trackingKey]) {
+      
+      var subject = "Google Career Application is Open";
+      var message = "Please apply to the Google position you are watching. The apply button has been updated on the website:\n\n" + userLink;
+      
+      MailApp.sendEmail(userEmail, subject, message);
+      
+      // Mark this specific email and link combination as sent
+      sentNotifications[trackingKey] = true;
+      emailsSentCount++;
     }
   }
   
-  // Save the updated list of emails back to the properties
+  // 6. Save the updated tracking list back to the properties
   if (emailsSentCount > 0) {
-    scriptProperties.setProperty('sentEmails', JSON.stringify(sentEmails));
+    scriptProperties.setProperty('sentNotifications', JSON.stringify(sentNotifications));
     console.log("Successfully sent " + emailsSentCount + " new emails.");
   } else {
-    console.log("No new form submissions to email.");
+    console.log("No new updates to send.");
   }
 }
 
 /**
- * Run this function manually to test if the script can read your form correctly.
+ * Run this function manually to test if the script reads the new form format correctly.
  * It will NOT send any emails.
  */
-function testReadForm() {
+function testReadMultipleLinks() {
   var formId = "1JzQkcc8fsnolMbQLZoRrooxmFt-onrWVa8gEPlqnbs4"; 
   var form = FormApp.openById(formId);
   var responses = form.getResponses();
   
-  console.log("Test: Found " + responses.length + " total responses in the form.");
+  console.log("Test: Found " + responses.length + " total submissions.");
   
   for (var i = 0; i < responses.length; i++) {
     var itemResponses = responses[i].getItemResponses();
+    var email = "Not found";
+    var link = "Not found";
     
-    if (itemResponses.length > 0) {
-      var emailAddress = itemResponses[0].getResponse();
-      console.log("Row " + (i + 1) + " Email found: " + emailAddress);
-    } else {
-      console.log("Row " + (i + 1) + " has no email answer.");
+    for (var j = 0; j < itemResponses.length; j++) {
+      var questionTitle = itemResponses[j].getItem().getTitle().toLowerCase();
+      
+      if (questionTitle.includes("email")) {
+        email = itemResponses[j].getResponse();
+      } else if (questionTitle.includes("link")) {
+        link = itemResponses[j].getResponse();
+      }
     }
+    
+    console.log("Row " + (i + 1) + " | Email: " + email + " | Link: " + link);
   }
 }
 
@@ -101,6 +132,6 @@ function testReadForm() {
  */
 function resetScript() {
   var scriptProperties = PropertiesService.getScriptProperties();
-  scriptProperties.deleteProperty('sentEmails');
-  console.log("Script reset. All users in the form will receive an email again next time the button is found.");
+  scriptProperties.deleteProperty('sentNotifications');
+  console.log("Script reset. The tracking log is clear.");
 }
