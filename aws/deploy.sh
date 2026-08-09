@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Deploys the apply-watcher Lambda + a 5-minute EventBridge schedule.
-# Idempotent: re-run after editing lambda_function.py or .env to update.
+# Idempotent: re-run after editing src/index.ts or .env to update.
 #
 # Prereqs:
 #   1. aws configure          (your AWS access key, e.g. region us-east-1)
-#   2. cp .env.example .env   and fill in Twilio creds + job URLs
+#   2. cp .env.example .env   and fill in Photon creds + job URLs
+#   3. bun                    (builds the Lambda bundle)
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -15,7 +16,7 @@ STATE_PARAM=/apply-watcher/state
 
 [ -f .env ] || { echo "Missing aws/.env — copy .env.example and fill it in."; exit 1; }
 set -a; source .env; set +a
-: "${JOB_URLS:?}" "${TWILIO_ACCOUNT_SID:?}" "${TWILIO_AUTH_TOKEN:?}" "${TWILIO_FROM:?}" "${TWILIO_TO:?}"
+: "${JOB_URLS:?}" "${PROJECT_ID:?}" "${PROJECT_SECRET:?}" "${RECIPIENTS:?}"
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION=$(aws configure get region)
@@ -39,13 +40,17 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name ssm-state --policy-doc
     \"Resource\": \"arn:aws:ssm:$REGION:$ACCOUNT:parameter$STATE_PARAM\"}]}"
 
 # --- Lambda -----------------------------------------------------------------
-rm -f function.zip && zip -q function.zip lambda_function.py
+command -v bun >/dev/null || { echo "bun is required to build (https://bun.sh)"; exit 1; }
+bun install --silent
+# @aws-sdk/* ships with the nodejs runtime — keep it external, bundle the rest.
+bun build src/index.ts --target node --external '@aws-sdk/*' --outfile dist/index.mjs >/dev/null
+rm -f function.zip && (cd dist && zip -q ../function.zip index.mjs)
 
 ENV_JSON=$(python3 - <<'PY'
 import json, os
 print(json.dumps({"Variables": {k: os.environ[k] for k in
-  ["JOB_URLS","TWILIO_ACCOUNT_SID","TWILIO_AUTH_TOKEN","TWILIO_FROM","TWILIO_TO"]}
-  | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}))
+  ["JOB_URLS","PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
+  | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}}))
 PY
 )
 
@@ -54,15 +59,20 @@ if aws lambda get-function --function-name "$FUNC" >/dev/null 2>&1; then
     --zip-file fileb://function.zip >/dev/null
   aws lambda wait function-updated --function-name "$FUNC"
   aws lambda update-function-configuration --function-name "$FUNC" \
-    --environment "$ENV_JSON" --timeout 60 >/dev/null
+    --environment "$ENV_JSON" --timeout 120 >/dev/null
 else
   aws lambda create-function --function-name "$FUNC" \
-    --runtime python3.12 --handler lambda_function.lambda_handler \
+    --runtime nodejs22.x --handler index.handler \
     --role "arn:aws:iam::$ACCOUNT:role/$ROLE" \
     --zip-file fileb://function.zip \
-    --environment "$ENV_JSON" --timeout 60 >/dev/null
+    --environment "$ENV_JSON" --timeout 120 >/dev/null
 fi
 aws lambda wait function-updated --function-name "$FUNC"
+# Cost guardrails: never more than one concurrent run; logs expire.
+aws lambda put-function-concurrency --function-name "$FUNC" \
+  --reserved-concurrent-executions 1 >/dev/null
+aws logs put-retention-policy --log-group-name "/aws/lambda/$FUNC" \
+  --retention-in-days 14 2>/dev/null || true
 echo "Lambda $FUNC deployed."
 
 # --- Schedule ---------------------------------------------------------------

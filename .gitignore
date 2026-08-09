@@ -8,3 +8,8 @@ state.json
 apply_notifier.log
 config.yaml
 .venv/
+node_modules/
+aws/.env
+aws/function.zip
+aws/dist/
+aws/bun.lock

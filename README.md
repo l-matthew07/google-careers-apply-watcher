@@ -17,8 +17,8 @@ want to run it:
 
 | Implementation | Runs on | Alerts via |
 |----------------|---------|------------|
+| [`aws/`](#cloud-mode-aws-lambda--imessage) | AWS Lambda (free tier) | **iMessage** via Photon Spectrum — the current MVP |
 | [`apply_watcher.py`](#local-mode-macos) | Your Mac (stdlib only) | macOS notification |
-| [`aws/`](#cloud-mode-aws-lambda--twilio-sms) | AWS Lambda (free tier) | Twilio SMS |
 | [`apply_notifier.py`](#apply_notifierpy-slack--email--webhook) | Anywhere with Python | Slack / email / webhook |
 
 ## Local mode (macOS)
@@ -37,30 +37,31 @@ awake and keep a timestamped log.
 
 Python 3 standard library only — nothing to install.
 
-## Cloud mode (AWS Lambda + Twilio SMS)
+## Cloud mode (AWS Lambda + iMessage)
 
-Runs every 5 minutes on AWS free tier and **texts everyone in `TWILIO_TO`**
-(comma-separated) the moment a button appears — one SMS per event per
-recipient, deduped via SSM Parameter Store state. This is the current MVP:
-the team gets the stream directly and relays it onward by hand.
+Runs every 5 minutes on AWS free tier and **iMessages everyone in
+`RECIPIENTS`** the moment a button appears — one DM per event per
+recipient, sent through [Photon Spectrum](https://photon.codes/docs/spectrum-ts)
+Cloud, deduped via SSM Parameter Store state.
 
 One-time setup:
 
 ```bash
 aws configure                      # your AWS access key + region
 cd aws
-cp .env.example .env               # fill in Twilio creds + JOB_URLS
-./deploy.sh
+cp .env.example .env               # fill in Photon creds + JOB_URLS + RECIPIENTS
+./deploy.sh                        # needs bun installed (builds the bundle)
 ```
 
 `deploy.sh` is idempotent — it creates (or updates) the IAM role, the
-`apply-watcher` Lambda (python3.12, stdlib-only zip), and a
+`apply-watcher` Lambda (nodejs22.x, bundled with bun), and a
 `rate(5 minutes)` EventBridge schedule, then invokes it once as a smoke
 test. Re-run it after changing `.env` or the code.
 
-Twilio: create an account at twilio.com, buy a number (~$1/mo, trial credit
-covers it), and copy the Account SID + Auth Token from the console into
-`aws/.env`. **`.env` is gitignored — never commit credentials.**
+Photon: `PROJECT_ID` / `PROJECT_SECRET` come from your project Settings
+on the [dashboard](https://app.photon.codes). Every number in
+`RECIPIENTS` must be registered there as a project user (shared-pool
+plan requirement). **`.env` is gitignored — never commit credentials.**
 
 Watch it run:
 
@@ -69,7 +70,7 @@ aws logs tail /aws/lambda/apply-watcher --follow
 ```
 
 Cost: ~8,600 invocations/month — comfortably inside the Lambda and
-EventBridge free tiers; the only real cost is the Twilio number.
+EventBridge free tiers; Photon's free plan covers the messaging.
 
 ## `apply_notifier.py` (Slack / email / webhook)
 
