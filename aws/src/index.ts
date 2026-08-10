@@ -14,6 +14,8 @@
  *     PROJECT_SECRET  its API secret
  *     RECIPIENTS      comma-separated E.164 numbers; each must be a
  *                     registered project user on the Photon dashboard
+ *     EMAIL_FROM      optional; SES-verified sender for email alerts
+ *     EMAIL_TO        optional; comma-separated email alert recipients
  *     STATE_PARAM     SSM parameter name (default /apply-watcher/state)
  */
 
@@ -24,6 +26,7 @@ import {
   GetParameterCommand,
   PutParameterCommand,
 } from "@aws-sdk/client-ssm";
+import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
@@ -31,6 +34,7 @@ const UA =
 const APPLY_RE = /href="(\.\/apply\?jobId=[^"]+)"/;
 
 const ssm = new SSMClient({});
+const ses = new SESv2Client({});
 
 type Status = "live" | "waiting" | "gone" | "error";
 type State = { notified: string[] };
@@ -88,6 +92,30 @@ async function saveState(param: string, state: State): Promise<void> {
   }));
 }
 
+async function emailAlerts(alerts: string[]): Promise<void> {
+  const from = process.env.EMAIL_FROM;
+  const to = (process.env.EMAIL_TO ?? "")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  if (!from || to.length === 0) return;
+  try {
+    await ses.send(new SendEmailCommand({
+      FromEmailAddress: from,
+      Destination: { ToAddresses: to },
+      Content: {
+        Simple: {
+          Subject: { Data: "Google Careers apply-watcher alert" },
+          Body: { Text: { Data: alerts.join("\n\n") } },
+        },
+      },
+    }));
+    console.log(`email -> ${to.join(", ")}: sent`);
+  } catch (e) {
+    // Likely SES sandbox (recipient unverified) or identity not yet
+    // verified. Don't block the iMessage path.
+    console.error(`email -> ${to.join(", ")}: FAILED — ${e}`);
+  }
+}
+
 async function sendAlerts(alerts: string[]): Promise<void> {
   const recipients = (process.env.RECIPIENTS ?? "")
     .split(",").map(s => s.trim()).filter(Boolean);
@@ -139,7 +167,10 @@ export const handler = async (): Promise<Record<string, Status>> => {
     }
   }
 
-  if (alerts.length > 0) await sendAlerts(alerts);
+  if (alerts.length > 0) {
+    await emailAlerts(alerts);
+    await sendAlerts(alerts);
+  }
   await saveState(param, state);
   console.log(JSON.stringify(results));
   return results;

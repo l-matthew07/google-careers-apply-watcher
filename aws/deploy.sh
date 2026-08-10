@@ -37,7 +37,10 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name ssm-state --policy-doc
   \"Version\": \"2012-10-17\",
   \"Statement\": [{\"Effect\": \"Allow\",
     \"Action\": [\"ssm:GetParameter\", \"ssm:PutParameter\"],
-    \"Resource\": \"arn:aws:ssm:$REGION:$ACCOUNT:parameter$STATE_PARAM\"}]}"
+    \"Resource\": \"arn:aws:ssm:$REGION:$ACCOUNT:parameter$STATE_PARAM\"},
+   {\"Effect\": \"Allow\",
+    \"Action\": \"ses:SendEmail\",
+    \"Resource\": \"*\"}]}"
 
 # --- Lambda -----------------------------------------------------------------
 command -v bun >/dev/null || { echo "bun is required to build (https://bun.sh)"; exit 1; }
@@ -50,6 +53,7 @@ ENV_JSON=$(python3 - <<'PY'
 import json, os
 print(json.dumps({"Variables": {k: os.environ[k] for k in
   ["JOB_URLS","PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
+  | {k: os.environ[k] for k in ["EMAIL_FROM","EMAIL_TO"] if os.environ.get(k)}
   | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}}))
 PY
 )
