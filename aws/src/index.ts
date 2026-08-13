@@ -328,6 +328,15 @@ export const handler = async (): Promise<Record<string, Status>> => {
     // trusted when that posting's provider fully answered this run.
     const liveUrls = new Set([...combined.values()].map(j => j.jobUrl));
     for (const [url, title] of Object.entries(state.titles)) {
+      // Pattern may have narrowed since this posting was discovered (e.g.
+      // seasons excluded): stop tracking it rather than alert on its close.
+      if (!pattern.test(title)) {
+        delete state.titles[url];
+        state.notified = state.notified.filter(
+          k => k !== `live:${url}` && k !== `gone:${url}`,
+        );
+        continue;
+      }
       if (liveUrls.has(url) || urls.includes(url)) continue;
       const trusted = url.includes("amazon.jobs")
         ? amazon !== null && amazon.ok
