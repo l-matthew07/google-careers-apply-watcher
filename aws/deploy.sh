@@ -39,7 +39,7 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name ssm-state --policy-doc
   \"Version\": \"2012-10-17\",
   \"Statement\": [{\"Effect\": \"Allow\",
     \"Action\": [\"ssm:GetParameter\", \"ssm:PutParameter\"],
-    \"Resource\": \"arn:aws:ssm:$REGION:$ACCOUNT:parameter$STATE_PARAM\"},
+    \"Resource\": \"arn:aws:ssm:$REGION:$ACCOUNT:parameter/apply-watcher/*\"},
    {\"Effect\": \"Allow\",
     \"Action\": \"ses:SendEmail\",
     \"Resource\": \"*\"}]}"
@@ -62,7 +62,8 @@ import json, os
 print(json.dumps({"Variables": {k: os.environ[k] for k in
   ["PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
   | {k: os.environ[k] for k in
-     ["JOB_URLS","TITLE_PATTERN","AMAZON_COUNTRIES","EMAIL_FROM","EMAIL_TO"]
+     ["JOB_URLS","TITLE_PATTERN","AMAZON_COUNTRIES","ADMIN_KEY",
+      "EMAIL_FROM","EMAIL_TO"]
      if os.environ.get(k)}
   | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}}))
 PY
@@ -98,6 +99,29 @@ aws lambda add-permission --function-name "$FUNC" \
 aws events put-targets --rule "$RULE" --targets \
   "Id=1,Arn=arn:aws:lambda:$REGION:$ACCOUNT:function:$FUNC" >/dev/null
 echo "Scheduled: every 5 minutes."
+
+# --- Admin page (API Gateway HTTP API) ---------------------------------------
+# Not a Lambda Function URL: newer accounts block public URL invokes at the
+# account level and the only workaround grants unconditioned public
+# lambda:InvokeFunction. API Gateway is public by design and sends the same
+# payload-v2 event shape, so the handler doesn't care which fronts it.
+if [ -n "${ADMIN_KEY:-}" ]; then
+  API_NAME=apply-watcher-admin
+  API_ID=$(aws apigatewayv2 get-apis \
+    --query "Items[?Name=='$API_NAME'].ApiId | [0]" --output text)
+  if [ "$API_ID" = "None" ] || [ -z "$API_ID" ]; then
+    API_ID=$(aws apigatewayv2 create-api --name "$API_NAME" \
+      --protocol-type HTTP \
+      --target "arn:aws:lambda:$REGION:$ACCOUNT:function:$FUNC" \
+      --query ApiId --output text)
+  fi
+  aws lambda add-permission --function-name "$FUNC" \
+    --statement-id apigw-invoke --action lambda:InvokeFunction \
+    --principal apigateway.amazonaws.com \
+    --source-arn "arn:aws:execute-api:$REGION:$ACCOUNT:$API_ID/*" \
+    >/dev/null 2>&1 || true
+  echo "Admin page: https://$API_ID.execute-api.$REGION.amazonaws.com/?key=$ADMIN_KEY"
+fi
 
 # --- Smoke test -------------------------------------------------------------
 echo "Invoking once now..."
