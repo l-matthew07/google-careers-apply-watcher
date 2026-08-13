@@ -1,16 +1,16 @@
 /**
- * AWS Lambda: Notion careers (Ashby) posting watcher with Photon Spectrum
+ * AWS Lambda: job-posting watcher (Notion + Amazon) with Photon Spectrum
  * iMessage alerts.
  *
  * Runs on an EventBridge schedule. Reads the Notion board from two redundant
  * sources — Ashby's public job-board API and the server-rendered board page
- * (union wins for "live"; "closed" requires absence from both). When a
- * watched posting goes live
- * (listed on the board) it DMs every number in RECIPIENTS over iMessage via
- * Spectrum Cloud with the direct application link. A posting that was live
- * and later disappears triggers a one-time "closed" alert. Already-notified
- * events are remembered in an SSM parameter so you get exactly one message
- * per event.
+ * (union wins for "live"; "closed" requires absence from both) — and the
+ * Amazon board from amazon.jobs' search API. When a posting matching
+ * TITLE_PATTERN goes live, it DMs every number in RECIPIENTS over iMessage
+ * via Spectrum Cloud with the direct application link. A posting that was
+ * live and later disappears triggers a one-time "closed" alert.
+ * Already-notified events are remembered in an SSM parameter so you get
+ * exactly one message per event.
  *
  * Environment variables:
  *     TITLE_PATTERN   case-insensitive regex; any board posting whose title
@@ -18,6 +18,8 @@
  *                     yet, e.g. future intern roles)
  *     JOB_URLS        optional comma- or newline-separated Ashby posting URLs
  *                     (https://jobs.ashbyhq.com/notion/<uuid>) to watch by id
+ *     AMAZON_COUNTRIES  optional comma-separated ISO3 codes for the Amazon
+ *                     search (default USA,CAN)
  *     PROJECT_ID      Spectrum Cloud project (Photon dashboard → Settings)
  *     PROJECT_SECRET  its API secret
  *     RECIPIENTS      comma-separated E.164 numbers; each must be a
@@ -38,6 +40,8 @@ import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 
 const BOARD_API = "https://api.ashbyhq.com/posting-api/job-board/notion";
 const BOARD_PAGE = "https://jobs.ashbyhq.com/notion";
+const AMAZON_API = "https://www.amazon.jobs/en/search.json";
+const AMAZON_JOB = "https://www.amazon.jobs/en/jobs";
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
@@ -46,30 +50,30 @@ const ssm = new SSMClient({});
 const ses = new SESv2Client({});
 
 type Status = "live" | "waiting" | "gone" | "error";
-// titles remembers pattern-discovered postings (url -> title) so we can
-// name them in "closed" alerts after they've been delisted.
-type State = { notified: string[]; titles?: Record<string, string> };
-type AshbyJob = {
+type Job = {
   id: string;
   title: string;
   location?: string;
   jobUrl: string;
   applyUrl: string;
 };
+// titles remembers pattern-discovered postings (url -> title) so we can
+// name them in "closed" alerts after they've been delisted.
+type State = { notified: string[]; titles?: Record<string, string> };
 
 function jobIdFromUrl(url: string): string | null {
   const m = url.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return m?.[1]?.toLowerCase() ?? null;
 }
 
-async function fetchBoard(): Promise<Map<string, AshbyJob> | null> {
+async function fetchBoard(): Promise<Map<string, Job> | null> {
   try {
     const resp = await fetch(BOARD_API, {
       headers: { "User-Agent": UA, Accept: "application/json" },
       signal: AbortSignal.timeout(25_000),
     });
     if (!resp.ok) return null;
-    const data = (await resp.json()) as { jobs?: AshbyJob[] };
+    const data = (await resp.json()) as { jobs?: Job[] };
     return new Map((data.jobs ?? []).map(j => [j.id.toLowerCase(), j]));
   } catch {
     return null;
@@ -79,7 +83,7 @@ async function fetchBoard(): Promise<Map<string, AshbyJob> | null> {
 // Redundant second source: the board page itself server-renders the job list
 // as JSON in the HTML. If the posting API's cache ever lags, this is where a
 // new posting shows up first (it's what a human visiting the page sees).
-async function fetchBoardPage(): Promise<Map<string, AshbyJob> | null> {
+async function fetchBoardPage(): Promise<Map<string, Job> | null> {
   try {
     const resp = await fetch(BOARD_PAGE, {
       headers: { "User-Agent": UA },
@@ -88,7 +92,7 @@ async function fetchBoardPage(): Promise<Map<string, AshbyJob> | null> {
     if (!resp.ok) return null;
     const html = await resp.text();
     const re = /\{"id":"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})","title":"((?:[^"\\]|\\.)*)"(?:[^{}]*?"locationName":"((?:[^"\\]|\\.)*)")?/gi;
-    const jobs = new Map<string, AshbyJob>();
+    const jobs = new Map<string, Job>();
     for (const m of html.matchAll(re)) {
       const id = m[1]!.toLowerCase();
       jobs.set(id, {
@@ -105,6 +109,54 @@ async function fetchBoardPage(): Promise<Map<string, AshbyJob> | null> {
   } catch {
     return null;
   }
+}
+
+// Amazon (amazon.jobs) source. Two light queries per run instead of paging
+// all ~1.8k software-development postings: the 100 most recent (new postings
+// always enter at the top of sort=recent, so discovery can't miss them), plus
+// a full-text "intern" search that keeps tracking older intern postings so
+// close detection still works after they age out of the recent window.
+async function fetchAmazon(): Promise<{ jobs: Map<string, Job>; ok: boolean } | null> {
+  const countries = (process.env.AMAZON_COUNTRIES ?? "USA,CAN")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  const base =
+    `${AMAZON_API}?category%5B%5D=software-development&sort=recent` +
+    `&result_limit=100&offset=0` +
+    countries.map(c => `&normalized_country_code%5B%5D=${c}`).join("");
+  const maps = await Promise.all([base, `${base}&base_query=intern`].map(async q => {
+    try {
+      const resp = await fetch(q, {
+        headers: { "User-Agent": UA, Accept: "application/json" },
+        signal: AbortSignal.timeout(25_000),
+      });
+      if (!resp.ok) return null;
+      const data = (await resp.json()) as {
+        jobs?: {
+          id_icims: string;
+          title: string;
+          normalized_location?: string;
+          job_path: string;
+        }[];
+      };
+      return new Map<string, Job>((data.jobs ?? []).map(j => [`amzn-${j.id_icims}`, {
+        id: `amzn-${j.id_icims}`,
+        title: j.title,
+        location: j.normalized_location,
+        jobUrl: `${AMAZON_JOB}/${j.id_icims}`,
+        applyUrl: `https://www.amazon.jobs${j.job_path}`,
+      }]));
+    } catch {
+      return null;
+    }
+  }));
+  const okMaps = maps.filter((m): m is Map<string, Job> => m !== null);
+  if (okMaps.length === 0) return null;
+  // ok only when every query answered — close detection needs the full view.
+  return { jobs: new Map(okMaps.flatMap(m => [...m])), ok: okMaps.length === maps.length };
+}
+
+function company(url: string): string {
+  return url.includes("amazon.jobs") ? "Amazon" : "Notion";
 }
 
 async function loadState(param: string): Promise<State> {
@@ -136,7 +188,7 @@ async function emailAlerts(alerts: string[]): Promise<void> {
       Destination: { ToAddresses: to },
       Content: {
         Simple: {
-          Subject: { Data: "Notion careers apply-watcher alert" },
+          Subject: { Data: "Apply-watcher alert" },
           Body: { Text: { Data: alerts.join("\n\n") } },
         },
       },
@@ -159,17 +211,18 @@ async function sendAlerts(alerts: string[]): Promise<void> {
   });
   try {
     const im = imessage(app);
+    // One combined message per recipient — a burst of postings (e.g. first
+    // scan of a newly added company) shouldn't be a burst of texts.
+    const text = alerts.join("\n\n");
     for (const phone of recipients) {
-      for (const text of alerts) {
-        try {
-          const dm = await im.space.create(await im.user(phone));
-          await dm.send(text);
-          console.log(`iMessage -> ${phone}: sent`);
-        } catch (e) {
-          // Likely "Target not allowed": number not registered as a project
-          // user on the Photon dashboard. Don't block the other sends.
-          console.error(`iMessage -> ${phone}: FAILED — ${e}`);
-        }
+      try {
+        const dm = await im.space.create(await im.user(phone));
+        await dm.send(text);
+        console.log(`iMessage -> ${phone}: sent`);
+      } catch (e) {
+        // Likely "Target not allowed": number not registered as a project
+        // user on the Photon dashboard. Don't block the other sends.
+        console.error(`iMessage -> ${phone}: FAILED — ${e}`);
       }
     }
   } finally {
@@ -185,9 +238,10 @@ export const handler = async (): Promise<Record<string, Status>> => {
   const results: Record<string, Status> = {};
   const alerts: string[] = [];
 
-  const [apiBoard, pageBoard] = await Promise.all([
+  const [apiBoard, pageBoard, amazon] = await Promise.all([
     fetchBoard(),
     fetchBoardPage(),
+    fetchAmazon(),
   ]);
   // Union of both sources; API entries win (richer applyUrl/location data).
   const board =
@@ -202,6 +256,7 @@ export const handler = async (): Promise<Record<string, Status>> => {
     const onlyPage = [...pageIds].filter(id => apiBoard && !apiIds.has(id));
     console.log(
       `board: api=${apiBoard?.size ?? "FAIL"} page=${pageBoard?.size ?? "FAIL"}` +
+      ` amazon=${amazon ? `${amazon.jobs.size}${amazon.ok ? "" : " (partial)"}` : "FAIL"}` +
       (onlyApi.length || onlyPage.length
         ? ` DIVERGED onlyApi=[${onlyApi}] onlyPage=[${onlyPage}]`
         : ""),
@@ -250,9 +305,10 @@ export const handler = async (): Promise<Record<string, Status>> => {
   const pattern = process.env.TITLE_PATTERN
     ? new RegExp(process.env.TITLE_PATTERN, "i")
     : null;
-  if (pattern && board) {
+  const combined = new Map([...(board ?? []), ...(amazon?.jobs ?? [])]);
+  if (pattern && combined.size > 0) {
     state.titles ??= {};
-    for (const job of board.values()) {
+    for (const job of combined.values()) {
       if (!pattern.test(job.title)) continue;
       const keyLive = `live:${job.jobUrl}`;
       const keyGone = `gone:${job.jobUrl}`;
@@ -260,7 +316,7 @@ export const handler = async (): Promise<Record<string, Status>> => {
       state.titles[job.jobUrl] = job.title;
       if (!state.notified.includes(keyLive)) {
         alerts.push(
-          `🚨 Notion posting is LIVE: ${job.title}` +
+          `🚨 ${company(job.jobUrl)} posting is LIVE: ${job.title}` +
           (job.location ? ` (${job.location})` : "") +
           `\nApply now: ${job.applyUrl ?? job.jobUrl}`,
         );
@@ -268,23 +324,27 @@ export const handler = async (): Promise<Record<string, Status>> => {
       }
       state.notified = state.notified.filter(k => k !== keyGone);
     }
-    // Pattern-discovered postings that have since been delisted (only
-    // trustworthy when both sources answered).
+    // Pattern-discovered postings that have since been delisted. Only
+    // trusted when that posting's provider fully answered this run.
+    const liveUrls = new Set([...combined.values()].map(j => j.jobUrl));
     for (const [url, title] of Object.entries(state.titles)) {
-      const id = jobIdFromUrl(url);
-      if (!id || board.has(id) || urls.includes(url) || !bothSourcesOk) continue;
+      if (liveUrls.has(url) || urls.includes(url)) continue;
+      const trusted = url.includes("amazon.jobs")
+        ? amazon !== null && amazon.ok
+        : bothSourcesOk;
+      if (!trusted) continue;
       results[title] = "gone";
       const keyLive = `live:${url}`;
       const keyGone = `gone:${url}`;
       if (state.notified.includes(keyLive) && !state.notified.includes(keyGone)) {
-        alerts.push(`Notion posting closed (unlisted): ${title}\n${url}`);
+        alerts.push(`${company(url)} posting closed (unlisted): ${title}\n${url}`);
         state.notified.push(keyGone);
         state.notified = state.notified.filter(k => k !== keyLive);
       }
     }
     console.log(`pattern /${process.env.TITLE_PATTERN}/i matched ` +
       `${Object.values(results).filter(s => s === "live").length} live posting(s) ` +
-      `of ${board.size} on the board`);
+      `of ${combined.size} across sources`);
   }
 
   if (alerts.length > 0) {

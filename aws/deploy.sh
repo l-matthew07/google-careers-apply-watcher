@@ -62,7 +62,8 @@ import json, os
 print(json.dumps({"Variables": {k: os.environ[k] for k in
   ["PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
   | {k: os.environ[k] for k in
-     ["JOB_URLS","TITLE_PATTERN","EMAIL_FROM","EMAIL_TO"] if os.environ.get(k)}
+     ["JOB_URLS","TITLE_PATTERN","AMAZON_COUNTRIES","EMAIL_FROM","EMAIL_TO"]
+     if os.environ.get(k)}
   | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}}))
 PY
 )
