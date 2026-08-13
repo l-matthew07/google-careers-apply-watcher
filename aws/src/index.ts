@@ -159,6 +159,12 @@ function company(url: string): string {
   return url.includes("amazon.jobs") ? "Amazon" : "Notion";
 }
 
+// Alert-dedupe key: companies (Amazon especially) post the same role under
+// several job ids and repost under fresh ids later. One title = one alert.
+function titleKey(url: string, title: string): string {
+  return `${company(url)}:${title.toLowerCase().replace(/\s+/g, " ").trim()}`;
+}
+
 async function loadState(param: string): Promise<State> {
   try {
     const out = await ssm.send(new GetParameterCommand({ Name: param }));
@@ -310,10 +316,16 @@ export const handler = async (): Promise<Record<string, Status>> => {
     state.titles ??= {};
     for (const job of combined.values()) {
       if (!pattern.test(job.title)) continue;
-      const keyLive = `live:${job.jobUrl}`;
-      const keyGone = `gone:${job.jobUrl}`;
+      const norm = titleKey(job.jobUrl, job.title);
+      const keyLive = `live:${norm}`;
+      const keyGone = `gone:${norm}`;
       results[job.title] = "live";
       state.titles[job.jobUrl] = job.title;
+      // Migrate pre-dedupe per-URL marks so those postings don't re-alert.
+      if (state.notified.includes(`live:${job.jobUrl}`)) {
+        state.notified = state.notified.filter(k => k !== `live:${job.jobUrl}`);
+        if (!state.notified.includes(keyLive)) state.notified.push(keyLive);
+      }
       if (!state.notified.includes(keyLive)) {
         alerts.push(
           `🚨 ${company(job.jobUrl)} posting is LIVE: ${job.title}` +
@@ -322,11 +334,18 @@ export const handler = async (): Promise<Record<string, Status>> => {
         );
         state.notified.push(keyLive);
       }
-      state.notified = state.notified.filter(k => k !== keyGone);
+      state.notified = state.notified.filter(
+        k => k !== keyGone && k !== `gone:${job.jobUrl}`,
+      );
     }
     // Pattern-discovered postings that have since been delisted. Only
     // trusted when that posting's provider fully answered this run.
     const liveUrls = new Set([...combined.values()].map(j => j.jobUrl));
+    const liveTitles = new Set(
+      [...combined.values()]
+        .filter(j => pattern.test(j.title))
+        .map(j => titleKey(j.jobUrl, j.title)),
+    );
     for (const [url, title] of Object.entries(state.titles)) {
       // Pattern may have narrowed since this posting was discovered (e.g.
       // seasons excluded): stop tracking it rather than alert on its close.
@@ -342,9 +361,14 @@ export const handler = async (): Promise<Record<string, Status>> => {
         ? amazon !== null && amazon.ok
         : bothSourcesOk;
       if (!trusted) continue;
+      // This id is gone either way; only alert if no other live posting
+      // still carries the same title (repost/duplicate ids).
+      delete state.titles[url];
+      const norm = titleKey(url, title);
+      if (liveTitles.has(norm)) continue;
       results[title] = "gone";
-      const keyLive = `live:${url}`;
-      const keyGone = `gone:${url}`;
+      const keyLive = `live:${norm}`;
+      const keyGone = `gone:${norm}`;
       if (state.notified.includes(keyLive) && !state.notified.includes(keyGone)) {
         alerts.push(`${company(url)} posting closed (unlisted): ${title}\n${url}`);
         state.notified.push(keyGone);
