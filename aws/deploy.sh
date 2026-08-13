@@ -47,13 +47,20 @@ command -v bun >/dev/null || { echo "bun is required to build (https://bun.sh)";
 bun install --silent
 # @aws-sdk/* ships with the nodejs runtime — keep it external, bundle the rest.
 bun build src/index.ts --target node --external '@aws-sdk/*' --outfile dist/index.mjs >/dev/null
-rm -f function.zip && (cd dist && zip -q ../function.zip index.mjs)
+# The iMessage gRPC transport probes its optional peers with import.meta.resolve
+# at runtime, so they must exist as node_modules entries in the zip even though
+# their code is already bundled into index.mjs.
+rm -rf dist/node_modules && mkdir -p dist/node_modules/@grpc
+cp -R node_modules/nice-grpc node_modules/nice-grpc-common dist/node_modules/
+cp -R node_modules/@grpc/grpc-js dist/node_modules/@grpc/
+rm -f function.zip && (cd dist && zip -qr ../function.zip index.mjs node_modules)
 
 ENV_JSON=$(python3 - <<'PY'
 import json, os
 print(json.dumps({"Variables": {k: os.environ[k] for k in
-  ["JOB_URLS","PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
-  | {k: os.environ[k] for k in ["EMAIL_FROM","EMAIL_TO"] if os.environ.get(k)}
+  ["PROJECT_ID","PROJECT_SECRET","RECIPIENTS"]}
+  | {k: os.environ[k] for k in
+     ["JOB_URLS","TITLE_PATTERN","EMAIL_FROM","EMAIL_TO"] if os.environ.get(k)}
   | {"STATE_PARAM": os.environ.get("STATE_PARAM", "/apply-watcher/state")}}))
 PY
 )
