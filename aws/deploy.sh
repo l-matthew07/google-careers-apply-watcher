@@ -16,7 +16,9 @@ STATE_PARAM=/apply-watcher/state
 
 [ -f .env ] || { echo "Missing aws/.env — copy .env.example and fill it in."; exit 1; }
 set -a; source .env; set +a
-: "${JOB_URLS:?}" "${PROJECT_ID:?}" "${PROJECT_SECRET:?}" "${RECIPIENTS:?}"
+: "${PROJECT_ID:?}" "${PROJECT_SECRET:?}" "${RECIPIENTS:?}"
+[ -n "${JOB_URLS:-}${TITLE_PATTERN:-}" ] || \
+  { echo "Set TITLE_PATTERN and/or JOB_URLS in .env"; exit 1; }
 
 ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 REGION=$(aws configure get region)
